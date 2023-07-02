@@ -1,0 +1,134 @@
+---
+title: "EDS241: Assignment 1"
+author: "Andrew Bartnik"
+date: '`r format(Sys.time(), "%m/%d/%Y")`'
+output: 
+  pdf_document:
+    toc: false
+    number_sections: yes
+header-includes:
+  - \setlength{\parindent}{1em}
+  - \usepackage{float}
+---
+
+## Assignment 1
+
+```{r setup, echo = FALSE, message = FALSE, warning = FALSE}
+
+# set default chunk options
+knitr::opts_chunk$set(fig.width = 4, fig.height = 3, 
+                      echo = TRUE, message = FALSE, warning = FALSE)
+
+
+# load packages
+packages=c("stargazer", "here", "tidyr", "dplyr","stringr", "janitor", 
+           "cowplot", "ggplot2", "tinytex", "datasets", "tibble", "readxl", "estimatr")
+
+for (i in packages) {
+  if (require(i,character.only=TRUE)==FALSE) {
+    install.packages(i,repos='http://cran.us.r-project.org')
+  }
+  else {
+    require(i,character.only=TRUE)
+  }
+}
+
+#devtools::install_github('rstudio/rmarkdown')
+options(scipen=999) # not scientific notation
+
+```
+
+For the assignment, you will need the following variables: CensusTract, TotalPopulation, LowBirthWeight (percent of census tract births with weight less than 2500g), PM25 (ambient concentrations of PM2.5 in the census tract, in micrograms per cubic meters), Poverty (percent of population in the census tract living below twice the federal poverty line), and LinguisticIsolation (percent of households in the census tract with limited English speaking).
+
+```{r}
+# Read in the .xlsx file
+data <- read_excel("~/Desktop/MEDS/Winter/envpolicyeval/envpoleval/CES4.xlsx") |> 
+  select("Census Tract", "Total Population", "Low Birth Weight", "PM2.5", "Poverty", "Linguistic Isolation")
+
+data$`Low Birth Weight` <- as.numeric(data$`Low Birth Weight`)
+```
+
+(a) What is the average concentration of PM2.5 across all census tracts in California?
+
+```{r}
+# Just need to use summarise to find the mean of the PM2.5 column
+data |> 
+  summarise(avg_pm2.5 = mean(PM2.5))
+```
+
+**The average PM2.5 concentration across all census tracts in California is 10.2 micrograms per cubic meter.**
+
+(b) Make a histogram depicting the distribution of percent low birth weight and PM2.5.
+
+```{r}
+# Plotting the histogram of PM2.5 levels
+ggplot(data = data, aes(x = PM2.5)) + geom_histogram() + labs(x = "PM2.5 Level", y = 'Count', title = "Histogram of PM2.5 levels")
+
+# Plotting histogram of the Low Birth Weight levels
+ggplot(data = data, aes(x = `Low Birth Weight`)) + geom_histogram() + labs(x = "Rate of Low Birth Weights", y = 'Count', title = "Histogram of Low Birth Weights")
+```
+
+(c) Estimate an OLS regression of LowBirthWeight on PM25. Report the estimated slope coefficient and its heteroskedasticity-robust standard error. Interpret the estimated slope coefficient. Is the effect of PM25 on LowBirthWeight statistically significant at the 5% level?
+
+```{r}
+# Using lm with stargazer
+model1 <- lm(`Low Birth Weight`~ PM2.5, data = data)
+se_model1 <- starprep(model1, stat = c("std.error"), se_type = "HC1", alpha = 0.05) 
+stargazer(model1, se = se_model1, type="text")
+summary(model1)
+
+# Method 2
+mod_rob <- lm_robust(`Low Birth Weight`~ PM2.5, data = data)
+summary(mod_rob)
+```
+
+**The slope coefficient of PM2.5 is 0.118, meaning that for each 1 unit increase in PM2.5 levels, census tracts with Low Birth Weights (\< 2500g) increase by 0.118 on average. This effect is significant at the 5% level (p = 0.008). The heteroskedasticity-robust standard error is 0.0084.**
+
+(d) Suppose a new air quality policy is expected to reduce PM2.5 concentration by 2 micrograms per cubic meters. Predict the new average value of LowBirthWeight and derive its 95% confidence interval. Interpret the 95% confidence interval. [The script "LinearPrediction.R" available on Gauchospace will be helpful for this.
+
+```{r}
+# Making a new model using our dataframe subtracting the PM2.5 column 
+mod_2 <- lm_robust(`Low Birth Weight` ~ PM2.5, data = data, se_type = "HC1", alpha = 0.05)
+data$new_pm25 <- data$PM2.5-2
+mean_newpm25 <- data.frame(mean(data$new_pm25)) |> rename(PM2.5 = 1)
+
+# Making predictions with the new model
+preds_newpm <- predict(mod_2, newdata = mean_newpm25, se.fit = TRUE, interval = "confidence")
+
+
+# Making the confidence interval
+ci <- mean(preds_newpm$fit[,1]) |> 
+  round(3)
+ci_lwr <- mean(preds_newpm$fit[,2]) |> 
+  round(3)
+ci_upr <- mean(preds_newpm$fit[,3]) |> 
+  round(3)
+```
+
+**We predict the new average Low Birth Weight value to be 4.762, and we are 95% confident that the true average value of Low Birth Weight lies between 4.713 and 4.812**
+
+(e) Add the variable Poverty as an explanatory variable to the regression in (d). Interpret the estimated coefficient on Poverty. What happens to the estimated coefficient on PM25, compared to the regression in (d). Explain.
+
+```{r}
+# Making a new model with Poverty included
+model2 <- lm(`Low Birth Weight`~ PM2.5 + Poverty, data = data)
+se_model2 <- starprep(model2, stat = c("std.error"), se_type = "HC1", alpha = 0.05) 
+stargazer(model2, se = se_model2, type="text")
+```
+
+**The coefficient on `Poverty` is 0.027, meaning that for each one unit increase in poverty, census tracts with Low Birth Weights increase by 0.027 on average when `PM2.5` is held constant. The coefficient on `PM2.5` falls from 0.118 to 0.059 in this new model, suggesting that there was some omitted variable bias - the old PM2.5 coefficient was contributing to some of the effect of `Poverty` on `Low Birth Weight`, and when we include `Poverty` in the model, this effect is accounted for.**
+
+(f) Create an indicator variable equal to 1 if the census tract is above the median LinguisticIsolation (6.9), and equal to 0 otherwise. Add this indicator variable to regression model used in (e) and interpret the estimated coefficient on the indicator variable.
+
+```{r}
+# Making dummy variable
+data$`Linguistic Isolation` <- as.numeric(data$`Linguistic Isolation`)
+data_id <- data |> mutate(cid = case_when(`Linguistic Isolation` > 6.9 ~ 1,
+                                       `Linguistic Isolation` <= 6.9 ~ 0))
+# Making our third model with Poverty + cid column included
+model3 <- lm(`Low Birth Weight`~ PM2.5 + Poverty + cid, data = data_id)
+se_model2 <- starprep(model3, stat = c("std.error"), se_type = "HC1", alpha = 0.05) 
+stargazer(model3, se = se_model2, type="text")
+```
+
+**The coefficient on the indicator variable is 0.294. When we hold `PM2.5` and `Poverty` constant, the tracts with a Linguistic Isolation above the median (cid = 1) have, on average, a 0.294 higher value for Low Birth Weight than tracts with a Linguistic isolation below the median (cid = 0).**

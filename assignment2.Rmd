@@ -1,0 +1,119 @@
+---
+title: "EDS241: Assignment 2"
+author: "Andrew Bartnik"
+date: '`r format(Sys.time(), "%m/%d/%Y")`'
+output: 
+  pdf_document:
+    toc: false
+    number_sections: yes
+header-includes:
+  - \setlength{\parindent}{1em}
+  - \usepackage{float}
+---
+
+```{r setup, echo = FALSE, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(stargazer)
+library(MatchIt)
+library(MASS)
+library(vtable)
+library(estimatr)
+
+smoking <- read_csv("SMOKING_EDS241.csv") |> mutate()
+
+```
+
+Question 1: Application of estimators based on the "treatment ignorability" assumption The goal is to estimate the causal effect of maternal smoking during pregnancy on infant birth weight using the treatment ignorability assumptions (Lecture 6 & 7). The data are taken from the National Natality Detail Files, and the extract "SMOKING_EDS241.csv"' is a random sample of all births in Pennsylvania during 1989-1991. Each observation is a mother-infant pair. The key variables are: The outcome and treatment variables are: birthwgt=birth weight of infant in grams tobacco=indicator for maternal smoking The control variables are: mage (mother's age), meduc (mother's education), mblack (=1 if mother black), alcohol (=1 if consumed alcohol during pregnancy), first (=1 if first child), diabete (=1 if mother diabetic), anemia (=1 if mother anemic)
+
+# (a)
+
+What is the unadjusted mean difference in birth weight of infants with smoking and nonsmoking mothers? Under what assumption does this correspond to the average treatment effect of maternal smoking during pregnancy on infant birth weight? Provide some simple empirical evidence for or against this assumption.
+
+```{r}
+avg_bwt <- smoking |> group_by(tobacco) |> summarise(mean_bwt = mean(birthwgt))
+
+print(paste("The average birth weight for infants with smoking mothers is", round(avg_bwt[1,2], 2), "grams, while the average birth weight for infants with nonsmoking numbers is", round(avg_bwt[2,2], 2), "grams. The unadjusted mean difference in the birth weights between these two groups is", round(avg_bwt[1,2]-avg_bwt[2,2], 2), "grams. This corresponds to the treatment ignorability assumption, which assumes that the treatment (smoking or non smoking in mothers) is the only factor affecting the outcome (birth weight of infants), and that the outcome is not affected by differences in any of the covariates (education, alcohol-use, etc) between treatment groups. This assumption is not met, since differences in covariates between treatment groups likely do have an effect on infant birth weight (eg alcohol use will affect the infants' birth weight regardless if the mother smoked or not.)."))
+```
+
+The average birth weight for infants with smoking mothers is 3430.29 grams, while the average birth weight for infants with nonsmoking numbers is 3185.75 grams. The unadjusted mean difference in the birth weights between these two groups is 244.54 grams. This corresponds to the treatment ignorability assumption, which assumes that the treatment (smoking or non smoking in mothers) is the only factor affecting the birth weight of infants, and is not correlated with any of the other factors (education, alcohol-use, etc). This assumption is not met, since smoking and alcohol use are likely correlated, and alcohol use will affect the infants' birth weight regardless if the mother smoked or not.
+
+# (b)
+
+Assume that maternal smoking is randomly assigned conditional on the observable covariates listed above. Estimate the effect of maternal smoking on birth weight using an OLS regression with linear controls for the covariates. Report the estimated coefficient on tobacco and its standard error.
+
+```{r}
+mod <- lm(birthwgt ~ ., data = smoking)
+se_models = starprep(mod, stat = c("std.error"), se_type = "HC2", alpha = 0.05)
+stargazer(mod, se = se_models, type="text")
+
+print(paste("The estimated coefficient on tobacco is -228.073, meaning that for observations where tobacco = 1 (a mother smoking during pregnancy), infants are on average 228g lighter than infants whose mothers did not smoke. The standard error on tobacco is 4.277"))
+```
+
+The estimated coefficient on tobacco is -228.073, meaning that for observations where tobacco = 1 (a mother smoking during pregnancy), infants are on average 228g lighter than infants whose mothers did not smoke. The standard error on tobacco is 4.277
+
+# (c)
+
+Use the exact matching estimator to estimate the effect of maternal smoking on birth weight. For simplicity, consider the following covariates in your matching estimator: create a 0-1 indicator for mother's age (=1 if mage\>=34), and a 0-1 indicator for mother's education (1 if meduc\>=16), mother's race (mblack), and alcohol consumption indicator (alcohol). These 4 covariates will create 2*2*2\*2 = 16 cells. Report the estimated average treatment effect of smoking on birthweight using the exact matching estimator and its linear regression analogue.
+
+```{r}
+# Making binary variables
+smoking <- smoking %>%
+  mutate(
+    age34 = as.numeric(mage >= 34),
+    edu16 = as.numeric(meduc >= 16),
+    alcohol2 = as.numeric(alcohol > 0)
+  )
+
+# Grouping data into subclasses
+grouping <- smoking |>
+  dplyr::select(age34, edu16, mblack, alcohol, tobacco, birthwgt) |>
+  group_by(age34, edu16, mblack, alcohol) |>
+  mutate(cell = row_number()) |>
+  ungroup()
+
+# Run the matchit 
+match <-
+  MatchIt::matchit(tobacco ~ age34 + edu16 + mblack + alcohol,
+                   data = grouping,
+                   method = 'exact')
+match_data <- match.data(match)
+
+
+mod_groups <-
+  lm(
+    birthwgt ~ as.factor(tobacco) * (
+      as.factor(age34) + as.factor(edu16) + as.factor(mblack) + as.factor(alcohol)
+    ),
+    data = match_data
+  )
+se_models = starprep(
+  mod_groups,
+  stat = c("std.error"),
+  se_type = "HC2",
+  alpha = 0.05
+)
+stargazer(mod_groups, se = se_models, type = "text")
+
+```
+
+```{r}
+TIA_table <- match_data %>%
+  group_by(subclass,tobacco)%>% 
+  summarise(n_obs = n(),
+            Y_mean= mean(birthwgt, na.rm = T))%>% #Calculate number of observations and Y mean by X by treatment cells
+  gather(variables, values, n_obs:Y_mean)%>% #Reshape data
+  mutate(variables = paste0(variables,"_",tobacco, sep=""))%>% #Combine the treatment and variables for reshaping
+  pivot_wider(id_cols = subclass, names_from = variables,values_from = values)%>% #Reshape data by treatment and X cell
+  ungroup()%>%  #Ungroup from X values
+  mutate(Y_diff = Y_mean_1 - Y_mean_0, #calculate Y_diff
+         w_ATE = (n_obs_0+n_obs_1)/(sum(n_obs_0)+sum(n_obs_1)),
+         w_ATT = n_obs_1/sum(n_obs_1))%>% #calculate weights
+  mutate_if(is.numeric, round, 2) #Round data
+
+stargazer(TIA_table, type = "text", summary = FALSE, digits = 2)
+
+ATE1 <- sum((TIA_table$w_ATE)*(TIA_table$Y_diff))
+ATT1 <- sum((TIA_table$w_ATT)*(TIA_table$Y_diff))
+```
+
+Using the exact matching estimator and its LR analogue, we find that the ATE of smoking on infant birth weights is approximately -224g. That is, infants whose mothers smoked during pregnancy are on average 224g lighter than infants whose mothers did not smoke during their pregnancy. The associated standard error is 4.7 grams.

@@ -1,0 +1,173 @@
+---
+title: "EDS241: Final"
+author: "Andrew Bartnik"
+date: '`r format(Sys.time(), "%m/%d/%Y")`'
+output: 
+  pdf_document:
+    toc: false
+    number_sections: yes
+header-includes:
+  - \setlength{\parindent}{1em}
+  - \usepackage{float}
+---
+
+```{r}
+library(tidyverse)
+library(stargazer)
+library(estimatr)
+library(broom)
+
+data <- read_csv("KM_EDS241.csv")
+```
+
+
+# (a) 
+Using the data for 1981, estimate a simple OLS regression of house values on the indicator
+for being located near the incinerator in 1981. What is the house value “penalty” for houses
+located near the incinerator? Does this estimated coefficient correspond to the ‘causal’ effect of
+the incinerator (and the negative amenities that come with it) on housing values? Explain why
+or why not.
+
+```{r}
+data_1981 <- data |> filter(year == 1981)
+mod1 <- lm(rprice ~ nearinc, data = data_1981)
+se_model1 <- starprep(mod1, stat = c("std.error"), se_type = "HC1", alpha = 0.05) 
+stargazer(mod1, se = se_model1, type="text")
+
+```
+**The value penalty associated with being located near an incinerator is $30,688. That is, houses located near an incinerator are on average $30,688 cheaper than houses not near an incinerator. This does not necessarily correspond to the causal effect of being located near an incinerator. Maybe houses located near an incinerator tend to have fewer rooms, a smaller area, or were built earlier. These would all lower the value of the house, regardless of its proximity to the incinerator.**
+
+# (b) 
+Using the data for 1978, provide some evidence the location choice of the incinerator was
+not “random” using the data on house values and characteristics.
+
+```{r}
+data_1978 <- data |> 
+  filter(year == 1978) 
+
+data_near_inc <- subset(data_1978, nearinc == 1)
+data_not_near_inc <- subset(data_1978, nearinc == 0)
+
+summary(data_near_inc)
+summary(data_not_near_inc)
+
+# Create a function to perform the t-test and return a tidy data frame
+perform_t_test <- function(var) {
+  t_test_result <- t.test(data_1978 %>% filter(nearinc == 1) %>% pull(!!sym(var)),
+                          data_1978 %>% filter(nearinc == 0) %>% pull(!!sym(var)))
+  return(tidy(t_test_result))
+}
+
+# Perform t-tests and store results in a data frame
+t_test_results <- tibble(variable = c("age", "rooms", "area", "land", "rprice")) %>%
+  mutate(t_test = map(variable, perform_t_test)) %>%
+  unnest(t_test)
+
+
+print(t_test_results)
+```
+**When we run t-tests on each of the characteristics grouping by houses near incinerators and houses not near incinerators, we can clearly see that there are differences in the characteristics that could be contributing to the lesser value of houses that are near incinerators. Houses near incinerators, on average, are 27 years older, have 0.794 fewer rooms, have 240 fewer sqft, are on plots with 30729 fewer sqft, and cost $18824 less than houses not located near incinerators. This shows that the location choice of the incinerators was not random, since the characteristics between the two groups differ significantly in all parameters using a significance level of 0.05.**
+
+# (c) 
+Based on the observed differences in (b), explain why the estimate in (a) is likely to be
+biased downward (i.e., overstate the negative effect of the incinerator on housing values).
+
+**The estimate in part (a) is likely to be biased downward because it does not control for other house characteristics that could affect house values. The results from part (b) show that houses near the incinerator tend to be older, have fewer rooms, less living space, and smaller plots. These characteristics are likely to decrease a house's value, regardless of its proximity to the incinerator. Since these factors are disproportionately associated with houses located near an incinerator, the estimate from part (a) does not isolate the effect of the incinerator alone.** 
+
+**The treatment ignorability assumption is violated in the analysis from part (a) because relevant house characteristics that affect house values (age, rooms, area, land) are not included in the model. Omitting these variables from the regression model leads to an omitted variable bias, causing the estimate in (a) to overstate the negative effect of the incinerator on housing values.**
+
+
+# (d) 
+Use a difference-in-differences (DD) estimator to estimate the causal effect of the incinerator
+on housing values without controlling for house and lot characteristics. Interpret the magnitude
+and sign of the estimated DD coefficient.
+
+```{r}
+# Create a variable for the post-treatment period (1981)
+data <- data |> 
+  mutate(year1981 = as.numeric(year == 1981))
+
+# Estimate the DD model without controlling for house characteristics
+mod_dd_simple <- lm(rprice ~ year1981 * nearinc, data = data)
+
+# Calculate robust standard errors
+se_mod_dd_simple <- starprep(mod_dd_simple, stat = c("std.error"), se_type = "HC1", alpha = 0.05)
+
+# Display the results
+stargazer(mod_dd_simple, se = se_mod_dd_simple, type="text")
+
+```
+
+```{r}
+# Manual sanity check
+# Calculate the average house prices for each group
+avg_prices <- data %>%
+  group_by(year1981, nearinc) %>%
+  summarise(avg_rprice = mean(rprice))
+
+# Calculate the differences in average house prices
+diff_pre_treatment <- avg_prices$avg_rprice[avg_prices$year1981 == 0 & avg_prices$nearinc == 1] - 
+                      avg_prices$avg_rprice[avg_prices$year1981 == 0 & avg_prices$nearinc == 0]
+diff_post_treatment <- avg_prices$avg_rprice[avg_prices$year1981 == 1 & avg_prices$nearinc == 1] - 
+                       avg_prices$avg_rprice[avg_prices$year1981 == 1 & avg_prices$nearinc == 0]
+
+# Calculate the difference-in-differences estimator
+dd_estimator <- diff_post_treatment - diff_pre_treatment
+
+# Display the result
+cat("Difference-in-differences estimator:", dd_estimator)
+```
+
+**The coefficient on `year1981` is 18,790, meaning that houses not near an incinerator were on average $18,790 more expensive in 1981 than in 1978. The coefficient on `nearinc` is -18,824, meaning that houses located near incinerators were on average $18,824 cheaper than houses not located near incinerators in the pre treatment period, 1978. The coefficient on year1981:nearinc is -11,863, which is an estimate of our DD coefficient - the effect of the treatment post treatment. This means that this coefficient is the causal effect of incinerator proximity on house prices, that is houses that are located near an incinerator are on average $11,863 cheaper than they would have been if the incinerator was not built. However, this coefficient is not statistically significant and we should control for other characteristics.**
+
+# (e) 
+Report the 95% confidence interval for the estimate of the causal effect on the incinerator in
+(d).
+```{r}
+stargazer(mod_dd_simple, type = 'text', ci = T, se_type="HC1", alpha = 0.05)
+```
+**We are 95% confident that the true value for the effect of the incinerator on housing values lies between -26,478.66 and 2,750.855 without controlling for other characteristics.**
+
+# (f) 
+How does your answer in (d) changes when you control for house and lot characteristics?
+Test the hypothesis that the coefficients on the house and lot characteristics are all jointly equal
+to 0.
+
+
+```{r}
+# Method 1
+
+# Estimate the DD model with controls for house and lot characteristics
+mod_dd_controls <- lm(rprice ~ year1981 * nearinc + age + rooms + area + land, data = data)
+
+# Calculate robust standard errors
+se_mod_dd_controls <- starprep(mod_dd_controls, stat = c("std.error"), se_type = "HC1", alpha = 0.05)
+
+# Display the results
+stargazer(mod_dd_controls, se = se_mod_dd_controls, type="text")
+
+cat("DD estimate without controls:", mod_dd_simple$coefficients["year1981:nearinc"], "\n")
+cat("DD estimate with controls:", mod_dd_controls$coefficients["year1981:nearinc"])
+```
+```{r}
+# Method 2
+# Full model (with house and lot characteristics)
+mod_dd_full <- lm(rprice ~ year1981 * nearinc + age + rooms + area + land, data = data)
+
+# Restricted model (without house and lot characteristics)
+mod_dd_restricted <- lm(rprice ~ year1981 * nearinc, data = data)
+
+# F-test comparing the full and restricted models
+anova(mod_dd_restricted, mod_dd_full)
+```
+
+**When we control for house and lot characteristics, the estimated causal effect of the incinerator on housing values becomes more negative, changing from -11,863.9 to -13,320.15. This indicates that the house and lot characteristics have some effect on housing values, and the null hypothesis that the coefficients on the house and lot characteristics are all jointly equal to 0 can be rejected.**
+
+**In this case, controlling for house and lot characteristics makes the estimated negative effect of the incinerator on housing values larger, suggesting that the negative impact of the incinerator is even more pronounced when taking into account the characteristics of the houses and lots.**
+
+# (g) 
+Explain (in words) what is the key assumption underlying the causal interpretation of the DD
+estimator in the context of the incinerator construction in North Andover.
+
+**The key assumption underlying the causal interpretation of the DD estimator in the context of the incinerator construction is that in the absence of the treatment, the control group and treatment group would have the same trends in their outcomes. In this case, in the absence of the incinerator construction, the housing values in the treatment group (houses near the incinerator) and the control group (houses not near the incinerator) would have followed the same trend over time.**
+
